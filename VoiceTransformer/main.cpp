@@ -15,11 +15,13 @@
 #include <iostream>
 #include <string>
 
+using namespace std;
+
 // Hata kontrolu icin basit yardimci makro: HRESULT basarisizsa mesaj basip cikar.
 #define CHECK_HR(hr, msg)                                              \
     if (FAILED(hr)) {                                                  \
-        std::wcerr << L"[HATA] " << msg << L" (HRESULT=0x"            \
-                   << std::hex << (hr) << L")\n";                      \
+        wcerr << L"[HATA] " << msg << L" (HRESULT=0x"                  \
+              << hex << (hr) << L")\n";                                \
         goto Cleanup;                                                  \
     }
 
@@ -27,20 +29,20 @@
 // tum cihazlarin dostane (friendly) isimlerini yazdirir.
 void ListDevices(IMMDeviceEnumerator* pEnumerator, EDataFlow flow, const wchar_t* baslik)
 {
-    std::wcout << L"\n==== " << baslik << L" ====\n";
+    wcout << L"\n==== " << baslik << L" ====\n";
 
     IMMDeviceCollection* pCollection = nullptr;
     // Sadece AKTIF (DEVICE_STATE_ACTIVE) cihazlari listele.
     HRESULT hr = pEnumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &pCollection);
     if (FAILED(hr)) {
-        std::wcerr << L"  [HATA] EnumAudioEndpoints basarisiz.\n";
+        wcerr << L"  [HATA] EnumAudioEndpoints basarisiz.\n";
         return;
     }
 
     UINT count = 0;
     pCollection->GetCount(&count);
     if (count == 0) {
-        std::wcout << L"  (Aktif cihaz bulunamadi)\n";
+        wcout << L"  (Aktif cihaz bulunamadi)\n";
     }
 
     for (UINT i = 0; i < count; ++i) {
@@ -53,15 +55,15 @@ void ListDevices(IMMDeviceEnumerator* pEnumerator, EDataFlow flow, const wchar_t
             PropVariantInit(&varName);
 
             if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName))) {
-                std::wstring name = varName.pwszVal ? varName.pwszVal : L"(isimsiz)";
+                wstring name = varName.pwszVal ? varName.pwszVal : L"(isimsiz)";
 
                 // VB-Cable cihazlarini isaretle (isimlerinde "CABLE" gecer).
-                bool isVBCable = (name.find(L"CABLE") != std::wstring::npos ||
-                                  name.find(L"VB-Audio") != std::wstring::npos);
+                bool isVBCable = (name.find(L"CABLE") != wstring::npos ||
+                                  name.find(L"VB-Audio") != wstring::npos);
 
-                std::wcout << L"  [" << i << L"] " << name;
-                if (isVBCable) std::wcout << L"   <-- VB-CABLE (sanal cihaz)";
-                std::wcout << L"\n";
+                wcout << L"  [" << i << L"] " << name;
+                if (isVBCable) wcout << L"   <-- VB-CABLE (sanal cihaz)";
+                wcout << L"\n";
             }
             PropVariantClear(&varName);
             pProps->Release();
@@ -77,8 +79,8 @@ int main()
     // Konsolun Turkce/Unicode karakterleri dogru gostermesi icin.
     SetConsoleOutputCP(CP_UTF8);
 
-    std::wcout << L"Real-Time DSP Voice Transformer - Adim 1: Cihaz Kesfi\n";
-    std::wcout << L"=====================================================\n";
+    wcout << L"Real-Time DSP Voice Transformer - Adim 1: Cihaz Kesfi\n";
+    wcout << L"=====================================================\n";
 
     IMMDeviceEnumerator* pEnumerator = nullptr;
 
@@ -97,13 +99,13 @@ int main()
     // 4) Sonra giris cihazlari (mikrofonlar) - VB-Cable "Output" burada gorunur.
     ListDevices(pEnumerator, eCapture, L"GIRIS CIHAZLARI (Mikrofonlar / Recording)");
 
-    std::wcout << L"\nKesif tamamlandi.\n";
+    wcout << L"\nKesif tamamlandi.\n";
 
 Cleanup:
     if (pEnumerator) pEnumerator->Release();
     CoUninitialize();
 
-    std::wcout << L"\nCikmak icin Enter'a basin...";
-    std::cin.get();
+    wcout << L"\nCikmak icin Enter'a basin...";
+    cin.get();
     return 0;
 }
