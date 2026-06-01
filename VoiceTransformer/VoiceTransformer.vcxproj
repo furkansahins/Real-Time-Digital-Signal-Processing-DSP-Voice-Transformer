@@ -62,5 +62,15 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="DeviceUtils.h" />
+    <ClInclude Include="AudioBuffer.h" />
+    <ClInclude Include="Effect.h" />
+    <ClInclude Include="PitchFilter.h" />
+    <ClInclude Include="RingModulator.h" />
+    <ClInclude Include="DSPEngine.h" />
+    <ClInclude Include="WASAPIManager.h" />
+    <ClInclude Include="VirtualAudioDriver.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
