@@ -28,6 +28,7 @@
 using namespace std;
 
 #define REFTIMES_PER_SEC 10000000  // 1 saniye = 10.000.000 x 100ns
+#define POLL_INTERVAL_MS 10        // Polling araligi (DUSUK GECIKME icin kucuk/sabit)
 
 #define CHECK_HR(hr, msg)                                              \
     if (FAILED(hr)) {                                                  \
@@ -169,12 +170,10 @@ int main()
     hr = pCaptureAudioClient->GetService(__uuidof(IAudioCaptureClient), (void**)&pCaptureClient);
     CHECK_HR(hr, L"IAudioCaptureClient alinamadi");
 
-    // Polling icin bekleme: capture tamponunun yarisi kadar.
-    {
-        UINT32 capFrames = 0; pCaptureAudioClient->GetBufferSize(&capFrames);
-        sleepMs = (DWORD)((double)capFrames / fmt->nSamplesPerSec * 1000.0 / 2.0);
-        if (sleepMs < 1) sleepMs = 1;
-    }
+    // Polling araligini SABIT ve KUCUK tutuyoruz. Onceden tampon boyutuna
+    // gore hesapliyorduk (1 sn tampon => 500ms!) ve bu yarim saniye gecikme
+    // biriktiriyordu. Sabit 10ms ile FIFO surekli kucuk kalir, gecikme dusuk olur.
+    sleepMs = POLL_INTERVAL_MS;
 
     // 5) Her iki akisi da baslat.
     hr = pCaptureAudioClient->Start();
@@ -208,6 +207,13 @@ int main()
             totalCaptured += numFrames;
             pCaptureClient->ReleaseBuffer(numFrames);
             pCaptureClient->GetNextPacketSize(&packetLength);
+        }
+
+        // (a2) GUVENLIK: FIFO 100ms'i asarsa en eski veriyi dusur. Boylece bir
+        //      takilma olsa bile gecikme sinirli kalir (latency birikmez).
+        size_t maxFifoBytes = (size_t)(fmt->nSamplesPerSec / 10) * blockAlign; // 100ms
+        if (fifo.size() > maxFifoBytes) {
+            fifo.erase(fifo.begin(), fifo.begin() + (fifo.size() - maxFifoBytes));
         }
 
         // (b) CABLE'da bos yer kadar FIFO'dan veri yaz.
