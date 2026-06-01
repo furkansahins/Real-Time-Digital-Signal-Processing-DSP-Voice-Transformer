@@ -75,6 +75,46 @@ IMMDevice* FindRenderDeviceByName(IMMDeviceEnumerator* pEnum, const wchar_t* sub
     return found;
 }
 
+// KAYNAK mikrofonu kullaniciya sectirir. ONEMLI: Windows varsayilan mikrofonu
+// "CABLE Output" yapilmis olabilir; o zaman varsayilani kullanmak dogrudan
+// dijital geri besleme (sonsuz yanki) yaratir. Bu yuzden fiziksel mikrofonu
+// ACIKCA sectiriyoruz ve CABLE cihazlarini kaynak olarak SECTIRMIYORUZ/uyariyoruz.
+IMMDevice* SelectCaptureDevice(IMMDeviceEnumerator* pEnum)
+{
+    IMMDeviceCollection* pCol = nullptr;
+    if (FAILED(pEnum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &pCol))) return nullptr;
+
+    UINT count = 0; pCol->GetCount(&count);
+    if (count == 0) { pCol->Release(); return nullptr; }
+
+    wcout << L"\nKullanilabilir mikrofonlar (KAYNAK olarak secin):\n";
+    int firstNonCable = -1;
+    for (UINT i = 0; i < count; ++i) {
+        IMMDevice* d = nullptr;
+        if (FAILED(pCol->Item(i, &d))) continue;
+        wstring name = GetDeviceName(d);
+        bool isCable = (name.find(L"CABLE") != wstring::npos || name.find(L"VB-Audio") != wstring::npos);
+        wcout << L"  [" << i << L"] " << name;
+        if (isCable) wcout << L"   <-- VB-CABLE (KAYNAK SECMEYIN! sonsuz yanki olur)";
+        else if (firstNonCable < 0) firstNonCable = (int)i;
+        wcout << L"\n";
+        d->Release();
+    }
+    if (firstNonCable < 0) firstNonCable = 0;
+
+    wcout << L"Kaynak mikrofon index girin (Enter = " << firstNonCable << L"): ";
+    int sel = firstNonCable;
+    wstring line;
+    getline(wcin, line);
+    if (!line.empty()) { try { sel = stoi(line); } catch (...) { sel = firstNonCable; } }
+    if (sel < 0 || (UINT)sel >= count) sel = firstNonCable;
+
+    IMMDevice* chosen = nullptr;
+    pCol->Item((UINT)sel, &chosen);
+    pCol->Release();
+    return chosen;
+}
+
 // Ses paketindeki en yuksek genligi (0..1) hesaplar (level meter icin).
 float ComputePeak(const BYTE* data, UINT32 numFrames, const WAVEFORMATEX* fmt)
 {
@@ -138,10 +178,18 @@ int main()
     }
     wcout << L"Hedef (cikis) : " << GetDeviceName(pCableDevice) << L"\n";
 
-    // 2) KAYNAK: varsayilan mikrofon.
-    hr = pEnumerator->GetDefaultAudioEndpoint(eCapture, eConsole, &pMicDevice);
-    CHECK_HR(hr, L"Varsayilan mikrofon bulunamadi");
-    wcout << L"Kaynak (giris): " << GetDeviceName(pMicDevice) << L"\n";
+    // 2) KAYNAK: FIZIKSEL mikrofonu kullaniciya sectir. (Varsayilani kullanmak
+    //    tehlikeli: Windows varsayilan mikrofonu CABLE Output ise dijital
+    //    geri besleme/sonsuz yanki olur.)
+    pMicDevice = SelectCaptureDevice(pEnumerator);
+    if (!pMicDevice) { wcerr << L"[HATA] Mikrofon secilemedi.\n"; goto Cleanup; }
+    {
+        wstring micName = GetDeviceName(pMicDevice);
+        wcout << L"Kaynak (giris): " << micName << L"\n";
+        if (micName.find(L"CABLE") != wstring::npos || micName.find(L"VB-Audio") != wstring::npos)
+            wcerr << L"[UYARI] Kaynak olarak CABLE sectiniz! Bu SONSUZ YANKIYA yol acar. "
+                     L"Lutfen fiziksel mikrofonu secin.\n";
+    }
 
     // 3) RENDER (CABLE) tarafini hazirla; ortak format olarak CABLE mix formatini kullan.
     hr = pCableDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&pRenderAudioClient);
