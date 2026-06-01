@@ -1,0 +1,38 @@
+# ---- Visual Studio / C++ build ciktilari ----
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+build/
+out/
+
+# Derleme ara dosyalari
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.idb
+*.tlog
+*.log
+*.lastbuildstate
+*.recipe
+
+# Visual Studio kullanici/cache dosyalari
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.aps
+
+# CMake (ileride kullanirsak)
+CMakeCache.txt
+CMakeFiles/
+cmake-install/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
