@@ -1,32 +1,34 @@
 // ============================================================================
 //  Real-Time DSP Voice Transformer
-//  Adim 2: Capture (Sesi Yakalama)
+//  Adim 3: Render (Sesi VB-Cable'a Yollama / Passthrough)
 //
-//  Varsayilan mikrofondan WASAPI (Shared Mode) ile ham PCM ses verisini okur.
-//  Her ses paketi geldiginde "Ses paketi alindi: <Hz>, <frame>" yazar ve
-//  basit bir ses seviyesi (level meter) cubugu cizer; boylece mikrofonun
-//  gercekten ses yakaladigini gozle goruruz.
+//  Varsayilan mikrofondan yakalanan sesi DSP'ye SOKMADAN dogrudan
+//  "CABLE Input (VB-Audio Virtual Cable)" sahte hoparlorune yazar.
+//  Boylece sesin karsiya kayipsiz ulastigini test ederiz:
+//      Mikrofon --> [FIFO tampon] --> CABLE Input  (==> CABLE Output)
 //
-//  Mod: Shared Mode (kolay/guvenli baslangic). Akis kusursuz olunca Adim
-//  ilerisinde Exclusive Mode'a gecilecek (raporun nihai hedefi).
+//  Test: Windows Ses ayarlarinda CABLE Output'u dinle ya da Discord'da
+//  mikrofon olarak CABLE Output'u sec; konustugunda sesini duymalisin.
+//
+//  Format uyumu icin yakalama akisi AUTOCONVERTPCM ile CABLE'in formatina
+//  cevrilir; boylece dogrudan kopyalariz (manuel resampling yok).
 //
 //  Durdurmak icin herhangi bir tusa bas.
 // ============================================================================
 
 #include <windows.h>
 #include <mmdeviceapi.h>      // IMMDeviceEnumerator, IMMDevice
-#include <audioclient.h>      // IAudioClient, IAudioCaptureClient
+#include <audioclient.h>      // IAudioClient, IAudioCaptureClient, IAudioRenderClient
 #include <functiondiscoverykeys_devpkey.h>  // PKEY_Device_FriendlyName
 #include <iostream>
 #include <string>
-#include <conio.h>           // _kbhit, _getch (tusla durdurma)
+#include <vector>
+#include <conio.h>           // _kbhit, _getch
 
 using namespace std;
 
-// 1 saniye = 10.000.000 "reference time" birimi (100 ns).
-#define REFTIMES_PER_SEC 10000000
+#define REFTIMES_PER_SEC 10000000  // 1 saniye = 10.000.000 x 100ns
 
-// Hata kontrol makrosu: HRESULT basarisizsa mesaj basip Cleanup'a atla.
 #define CHECK_HR(hr, msg)                                              \
     if (FAILED(hr)) {                                                  \
         wcerr << L"[HATA] " << msg << L" (HRESULT=0x"                  \
@@ -34,51 +36,59 @@ using namespace std;
         goto Cleanup;                                                  \
     }
 
-// Verilen cihazin dostane (friendly) ismini dondurur.
+// Cihazin dostane (friendly) ismini dondurur.
 wstring GetDeviceName(IMMDevice* pDevice)
 {
     wstring result = L"(bilinmeyen cihaz)";
     IPropertyStore* pProps = nullptr;
     if (SUCCEEDED(pDevice->OpenPropertyStore(STGM_READ, &pProps))) {
-        PROPVARIANT varName;
-        PropVariantInit(&varName);
-        if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName)) && varName.pwszVal) {
-            result = varName.pwszVal;
-        }
-        PropVariantClear(&varName);
+        PROPVARIANT v; PropVariantInit(&v);
+        if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &v)) && v.pwszVal)
+            result = v.pwszVal;
+        PropVariantClear(&v);
         pProps->Release();
     }
     return result;
 }
 
-// Ses paketindeki en yuksek genligi (0.0 - 1.0) hesaplar. Mikrofonun ses
-// alip almadigini gormek icin kullanilir. Shared Mode'da mix format genelde
-// 32-bit float'tir; 16-bit PCM ihtimaline karsi onu da destekliyoruz.
+// Cikis (render) cihazlari arasinda ismi 'substr' iceren ILK cihazi bulur.
+// Ornek: L"CABLE Input" -> "CABLE Input (VB-Audio Virtual Cable)"
+IMMDevice* FindRenderDeviceByName(IMMDeviceEnumerator* pEnum, const wchar_t* substr)
+{
+    IMMDeviceCollection* pCol = nullptr;
+    if (FAILED(pEnum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &pCol)))
+        return nullptr;
+
+    UINT count = 0; pCol->GetCount(&count);
+    IMMDevice* found = nullptr;
+    for (UINT i = 0; i < count; ++i) {
+        IMMDevice* pDev = nullptr;
+        if (FAILED(pCol->Item(i, &pDev))) continue;
+        if (GetDeviceName(pDev).find(substr) != wstring::npos) {
+            found = pDev;  // bulundu (sahipligi cagirana devrediyoruz)
+            break;
+        }
+        pDev->Release();
+    }
+    pCol->Release();
+    return found;
+}
+
+// Ses paketindeki en yuksek genligi (0..1) hesaplar (level meter icin).
 float ComputePeak(const BYTE* data, UINT32 numFrames, const WAVEFORMATEX* fmt)
 {
     float peak = 0.0f;
-    UINT32 sampleCount = numFrames * fmt->nChannels;
-
+    UINT32 n = numFrames * fmt->nChannels;
     if (fmt->wBitsPerSample == 32) {
-        // 32-bit IEEE float (-1.0 .. +1.0)
-        const float* samples = reinterpret_cast<const float*>(data);
-        for (UINT32 i = 0; i < sampleCount; ++i) {
-            float a = samples[i] < 0 ? -samples[i] : samples[i];
-            if (a > peak) peak = a;
-        }
-    }
-    else if (fmt->wBitsPerSample == 16) {
-        // 16-bit signed PCM (-32768 .. +32767)
-        const short* samples = reinterpret_cast<const short*>(data);
-        for (UINT32 i = 0; i < sampleCount; ++i) {
-            float a = (samples[i] < 0 ? -(float)samples[i] : (float)samples[i]) / 32768.0f;
-            if (a > peak) peak = a;
-        }
+        const float* s = reinterpret_cast<const float*>(data);
+        for (UINT32 i = 0; i < n; ++i) { float a = s[i] < 0 ? -s[i] : s[i]; if (a > peak) peak = a; }
+    } else if (fmt->wBitsPerSample == 16) {
+        const short* s = reinterpret_cast<const short*>(data);
+        for (UINT32 i = 0; i < n; ++i) { float a = (s[i] < 0 ? -(float)s[i] : (float)s[i]) / 32768.0f; if (a > peak) peak = a; }
     }
     return peak;
 }
 
-// peak (0..1) degerini "#####-----" gibi bir cubuga cevirip basar.
 void PrintLevelBar(float peak)
 {
     const int width = 20;
@@ -92,123 +102,158 @@ void PrintLevelBar(float peak)
 int main()
 {
     SetConsoleOutputCP(CP_UTF8);
-    wcout << L"Real-Time DSP Voice Transformer - Adim 2: Capture (Sesi Yakalama)\n";
-    wcout << L"================================================================\n";
+    wcout << L"Real-Time DSP Voice Transformer - Adim 3: Render (VB-Cable Passthrough)\n";
+    wcout << L"=====================================================================\n";
 
-    // TUM yerel degiskenleri en uste bildiriyoruz. Sebep: CHECK_HR icindeki
-    // "goto Cleanup", aralarda baslatilan degiskenlerin uzerinden atlarsa
-    // C++ "bypasses initialization" derleme hatasi verir.
-    IMMDeviceEnumerator* pEnumerator = nullptr;
-    IMMDevice* pDevice = nullptr;
-    IAudioClient* pAudioClient = nullptr;
-    IAudioCaptureClient* pCaptureClient = nullptr;
-    WAVEFORMATEX* pwfx = nullptr;
+    // --- Tum yerel degiskenler en ustte (goto Cleanup bypass hatasini onler) ---
+    IMMDeviceEnumerator* pEnumerator        = nullptr;
+    IMMDevice*           pMicDevice         = nullptr;  // kaynak: varsayilan mikrofon
+    IMMDevice*           pCableDevice       = nullptr;  // hedef: CABLE Input
+    IAudioClient*        pCaptureAudioClient = nullptr;
+    IAudioCaptureClient* pCaptureClient     = nullptr;
+    IAudioClient*        pRenderAudioClient = nullptr;
+    IAudioRenderClient*  pRenderClient      = nullptr;
+    WAVEFORMATEX*        fmt                = nullptr;  // CABLE'in mix formati (ortak format)
 
-    UINT32 bufferFrameCount = 0;
-    DWORD  sleepMs = 1;
-    unsigned long long totalPackets = 0;
-    unsigned long long totalFrames = 0;
+    UINT32 renderBufferFrames = 0;
+    UINT16 blockAlign         = 0;     // bir frame'in bayt boyutu
+    DWORD  sleepMs            = 1;
+    unsigned long long totalCaptured = 0;
+    unsigned long long totalRendered = 0;
+    vector<BYTE> fifo;                 // mikrofon ile CABLE arasindaki tampon
 
-    // 1) COM baslat.
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CHECK_HR(hr, L"CoInitializeEx basarisiz");
 
-    // 2) Enumerator olustur.
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                           __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator);
     CHECK_HR(hr, L"MMDeviceEnumerator olusturulamadi");
 
-    // 3) Varsayilan GIRIS (mikrofon) cihazini al. eCapture = giris, eConsole = genel kullanim.
-    hr = pEnumerator->GetDefaultAudioEndpoint(eCapture, eConsole, &pDevice);
+    // 1) HEDEF: CABLE Input cihazini bul.
+    pCableDevice = FindRenderDeviceByName(pEnumerator, L"CABLE Input");
+    if (!pCableDevice) {
+        wcerr << L"[HATA] 'CABLE Input' bulunamadi. VB-Audio Virtual Cable kurulu mu?\n";
+        goto Cleanup;
+    }
+    wcout << L"Hedef (cikis) : " << GetDeviceName(pCableDevice) << L"\n";
+
+    // 2) KAYNAK: varsayilan mikrofon.
+    hr = pEnumerator->GetDefaultAudioEndpoint(eCapture, eConsole, &pMicDevice);
     CHECK_HR(hr, L"Varsayilan mikrofon bulunamadi");
-    wcout << L"Kaynak mikrofon: " << GetDeviceName(pDevice) << L"\n";
+    wcout << L"Kaynak (giris): " << GetDeviceName(pMicDevice) << L"\n";
 
-    // 4) Cihazdan IAudioClient'i etkinlestir (donanima konusan ana arayuz).
-    hr = pDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&pAudioClient);
-    CHECK_HR(hr, L"IAudioClient etkinlestirilemedi");
+    // 3) RENDER (CABLE) tarafini hazirla; ortak format olarak CABLE mix formatini kullan.
+    hr = pCableDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&pRenderAudioClient);
+    CHECK_HR(hr, L"CABLE IAudioClient etkinlestirilemedi");
+    hr = pRenderAudioClient->GetMixFormat(&fmt);
+    CHECK_HR(hr, L"CABLE GetMixFormat basarisiz");
+    blockAlign = fmt->nBlockAlign;
+    wcout << L"Ortak format  : " << fmt->nSamplesPerSec << L" Hz, "
+          << fmt->nChannels << L" kanal, " << fmt->wBitsPerSample << L" bit\n";
 
-    // 5) Cihazin mix formatini al (Shared Mode bu formati dayatir).
-    hr = pAudioClient->GetMixFormat(&pwfx);
-    CHECK_HR(hr, L"GetMixFormat basarisiz");
+    hr = pRenderAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0,
+                                        REFTIMES_PER_SEC, 0, fmt, nullptr);
+    CHECK_HR(hr, L"CABLE render Initialize basarisiz");
+    hr = pRenderAudioClient->GetService(__uuidof(IAudioRenderClient), (void**)&pRenderClient);
+    CHECK_HR(hr, L"IAudioRenderClient alinamadi");
+    pRenderAudioClient->GetBufferSize(&renderBufferFrames);
 
-    wcout << L"Format: " << pwfx->nSamplesPerSec << L" Hz, "
-          << pwfx->nChannels << L" kanal, "
-          << pwfx->wBitsPerSample << L" bit\n";
-
-    // 6) AudioClient'i Shared Mode'da baslat. 1 saniyelik tampon istiyoruz.
-    hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0,
-                                  REFTIMES_PER_SEC, 0, pwfx, nullptr);
-    CHECK_HR(hr, L"IAudioClient.Initialize basarisiz");
-
-    // 7) Yakalama (capture) servisini al.
-    hr = pAudioClient->GetService(__uuidof(IAudioCaptureClient), (void**)&pCaptureClient);
+    // 4) CAPTURE (mikrofon) tarafini hazirla. AUTOCONVERTPCM ile CABLE formatina
+    //    cevirt => yakalanan frame'ler dogrudan render'a kopyalanabilir.
+    hr = pMicDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&pCaptureAudioClient);
+    CHECK_HR(hr, L"Mikrofon IAudioClient etkinlestirilemedi");
+    hr = pCaptureAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                                         AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                                         REFTIMES_PER_SEC, 0, fmt, nullptr);
+    CHECK_HR(hr, L"Mikrofon capture Initialize basarisiz (AUTOCONVERT desteklenmiyor olabilir)");
+    hr = pCaptureAudioClient->GetService(__uuidof(IAudioCaptureClient), (void**)&pCaptureClient);
     CHECK_HR(hr, L"IAudioCaptureClient alinamadi");
 
-    // Tampon kac frame? Buradan polling icin bekleme suresini hesaplayacagiz.
-    pAudioClient->GetBufferSize(&bufferFrameCount);
-    // Tamponun yarisi kadar uyuyup paketleri toplayacagiz (yarim = guvenli pay).
-    sleepMs = (DWORD)((double)bufferFrameCount / pwfx->nSamplesPerSec * 1000.0 / 2.0);
-    if (sleepMs < 1) sleepMs = 1;
+    // Polling icin bekleme: capture tamponunun yarisi kadar.
+    {
+        UINT32 capFrames = 0; pCaptureAudioClient->GetBufferSize(&capFrames);
+        sleepMs = (DWORD)((double)capFrames / fmt->nSamplesPerSec * 1000.0 / 2.0);
+        if (sleepMs < 1) sleepMs = 1;
+    }
 
-    // 8) Yakalamayi baslat.
-    hr = pAudioClient->Start();
-    CHECK_HR(hr, L"IAudioClient.Start basarisiz");
+    // 5) Her iki akisi da baslat.
+    hr = pCaptureAudioClient->Start();
+    CHECK_HR(hr, L"Capture Start basarisiz");
+    hr = pRenderAudioClient->Start();
+    CHECK_HR(hr, L"Render Start basarisiz");
 
-    wcout << L"\nYakalama basladi. Konusun! (Durdurmak icin bir tusa basin)\n\n";
+    wcout << L"\nPassthrough basladi: Mikrofon --> CABLE Input. Konusun!\n";
+    wcout << L"(Sesi duymak icin Ses ayarlarinda CABLE Output'u dinleyin)\n";
+    wcout << L"(Durdurmak icin bir tusa basin)\n\n";
 
-    // 9) Ana yakalama dongusu (polling). Bir tusa basilana kadar surer.
+    // 6) Ana dongu: yakala -> FIFO'ya yaz -> FIFO'dan CABLE'a aktar.
     while (!_kbhit()) {
         Sleep(sleepMs);
 
+        // (a) Mikrofondan bekleyen tum paketleri FIFO'ya bosalt.
         UINT32 packetLength = 0;
-        hr = pCaptureClient->GetNextPacketSize(&packetLength);
-        if (FAILED(hr)) break;
-
-        // Bekleyen tum paketleri sirayla bosalt.
+        float peak = 0.0f;
+        if (FAILED(pCaptureClient->GetNextPacketSize(&packetLength))) break;
         while (packetLength != 0) {
-            BYTE* pData = nullptr;
-            UINT32 numFrames = 0;
-            DWORD flags = 0;
+            BYTE* pData = nullptr; UINT32 numFrames = 0; DWORD flags = 0;
+            if (FAILED(pCaptureClient->GetBuffer(&pData, &numFrames, &flags, nullptr, nullptr))) break;
 
-            hr = pCaptureClient->GetBuffer(&pData, &numFrames, &flags, nullptr, nullptr);
-            if (FAILED(hr)) break;
-
-            // SILENT bayragi: cihaz sessizlik gonderiyor (pData gecersiz olabilir).
-            float peak = 0.0f;
-            if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT) && pData) {
-                peak = ComputePeak(pData, numFrames, pwfx);
+            size_t byteCount = (size_t)numFrames * blockAlign;
+            if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) || !pData) {
+                fifo.insert(fifo.end(), byteCount, 0);  // sessizlik = sifir baytlar
+            } else {
+                fifo.insert(fifo.end(), pData, pData + byteCount);
+                peak = ComputePeak(pData, numFrames, fmt);
             }
-
-            totalPackets++;
-            totalFrames += numFrames;
-
-            // Bilgi satiri: ayni satiri guncelleyerek konsolu temiz tutuyoruz.
-            wcout << L"\rSes paketi alindi: " << pwfx->nSamplesPerSec << L" Hz, "
-                  << numFrames << L" frame  ";
-            PrintLevelBar(peak);
-            wcout << L"  (toplam paket: " << totalPackets << L")     ";
-            wcout.flush();
-
-            // ÖNEMLI: aldigimiz frame'leri serbest birak, yoksa tampon dolar.
+            totalCaptured += numFrames;
             pCaptureClient->ReleaseBuffer(numFrames);
-
             pCaptureClient->GetNextPacketSize(&packetLength);
         }
+
+        // (b) CABLE'da bos yer kadar FIFO'dan veri yaz.
+        UINT32 padding = 0;
+        pRenderAudioClient->GetCurrentPadding(&padding);
+        UINT32 framesAvail = renderBufferFrames - padding;       // CABLE'da bos frame
+        UINT32 framesInFifo = (UINT32)(fifo.size() / blockAlign); // FIFO'da bekleyen frame
+        UINT32 framesToWrite = framesAvail < framesInFifo ? framesAvail : framesInFifo;
+
+        if (framesToWrite > 0) {
+            BYTE* pRender = nullptr;
+            if (SUCCEEDED(pRenderClient->GetBuffer(framesToWrite, &pRender))) {
+                size_t bytes = (size_t)framesToWrite * blockAlign;
+                memcpy(pRender, fifo.data(), bytes);
+                pRenderClient->ReleaseBuffer(framesToWrite, 0);
+                fifo.erase(fifo.begin(), fifo.begin() + bytes);  // tuketileni FIFO'dan sil
+                totalRendered += framesToWrite;
+            }
+        }
+
+        // Durum satiri (ayni satiri gunceller).
+        wcout << L"\rAktariliyor ";
+        PrintLevelBar(peak);
+        wcout << L"  FIFO: " << framesInFifo << L" frame   "
+              << L"capture: " << totalCaptured << L"  render: " << totalRendered << L"      ";
+        wcout.flush();
     }
 
-    // 10) Durdur.
-    pAudioClient->Stop();
-    if (_kbhit()) _getch();  // basilan tusu tampondan temizle
+    // 7) Durdur.
+    pCaptureAudioClient->Stop();
+    pRenderAudioClient->Stop();
+    if (_kbhit()) _getch();
 
-    wcout << L"\n\nYakalama durduruldu.\n";
-    wcout << L"Toplam paket: " << totalPackets << L", toplam frame: " << totalFrames << L"\n";
+    wcout << L"\n\nPassthrough durduruldu.\n";
+    wcout << L"Toplam yakalanan: " << totalCaptured << L" frame, gonderilen: "
+          << totalRendered << L" frame\n";
 
 Cleanup:
-    if (pwfx)           CoTaskMemFree(pwfx);
-    if (pCaptureClient) pCaptureClient->Release();
-    if (pAudioClient)   pAudioClient->Release();
-    if (pDevice)        pDevice->Release();
-    if (pEnumerator)    pEnumerator->Release();
+    if (fmt)                CoTaskMemFree(fmt);
+    if (pCaptureClient)     pCaptureClient->Release();
+    if (pCaptureAudioClient)pCaptureAudioClient->Release();
+    if (pRenderClient)      pRenderClient->Release();
+    if (pRenderAudioClient) pRenderAudioClient->Release();
+    if (pMicDevice)         pMicDevice->Release();
+    if (pCableDevice)       pCableDevice->Release();
+    if (pEnumerator)        pEnumerator->Release();
     CoUninitialize();
 
     wcout << L"\nCikmak icin Enter'a basin...";
