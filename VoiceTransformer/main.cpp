@@ -93,6 +93,29 @@ int main()
     pMicDevice = SelectCaptureDevice(pEnumerator);
     if (!pMicDevice) { wcerr << L"[HATA] Mikrofon secilemedi.\n"; exitCode = 1; goto Cleanup; }
 
+    float pitchlevel = 0.0f;
+    bool inputcontroller = false;              
+
+    while (!inputcontroller) {                 
+        cout << "Adjust pitch level: ";
+
+        string satir;
+        getline(cin, satir);                
+
+        try {
+            size_t idx = 0;
+            pitchlevel = stof(satir, &idx);  
+
+            if (idx != satir.size())
+                throw invalid_argument("fazladan karakter");
+
+            inputcontroller = true;            
+        }
+        catch (const exception& e) {
+            cout << "Gecersiz deger! Lutfen bir sayi girin.\n";
+        }
+    }
+
     {
         // ---- UML siniflarini olustur ve birbirine bagla ----
         VirtualAudioDriver cable;     // cikis (CABLE Input)
@@ -110,8 +133,8 @@ int main()
         fifo.configure(fmt->nChannels, fmt->nSamplesPerSec);
 
         // ---- Efektleri olustur (sahiplik burada; DSPEngine yalnizca isaret eder) ----
-        PitchFilter   deepEffect(-5.0f, L"Kalin (pitch -5)");   // ses kalinlastir
-        PitchFilter   thinEffect(+5.0f, L"Ince (pitch +5)");    // ses incelt
+        PitchFilter   deepEffect(-pitchlevel, L"Kalin ");   // ses kalinlastir
+        PitchFilter   thinEffect(+pitchlevel, L"Ince ");    // ses incelt
         RingModulator robotEffect(50.0f);                       // robotik
 
         // Efektlere ses bicimini tanit (ic tamponlarini hazirlarlar).
@@ -127,7 +150,7 @@ int main()
         wcout << L"Ortak format  : " << fmt->nSamplesPerSec << L" Hz, "
               << fmt->nChannels << L" kanal, " << fmt->wBitsPerSample << L" bit\n\n";
         wcout << L"--- MODLAR (calisirken tusa bas) ---\n";
-        wcout << L"  [0] Efektsiz   [1] Kalin (-5)   [2] Ince (+5)   [3] Robotik   [q] Cikis\n\n";
+        wcout << L"  [0] Efektsiz   [1] Kalin    [2] Ince    [3] Robotik   [q] Cikis\n\n";
 
         // ---- Akislari baslat ----
         if (!cable.start()) { wcerr << L"[HATA] CABLE start\n"; exitCode = 1; goto Cleanup; }
