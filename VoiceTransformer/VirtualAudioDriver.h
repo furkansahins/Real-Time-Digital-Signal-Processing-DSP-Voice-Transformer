@@ -34,7 +34,7 @@ public:
         channels     = m_format->nChannels;
 
         hr = m_client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0,
-                                  10000000 /*1 sn*/, 0, m_format, nullptr);
+                                  10000000 , 0, m_format, nullptr);
         if (FAILED(hr)) return false;
 
         hr = m_client->GetService(__uuidof(IAudioRenderClient), (void**)&m_render);

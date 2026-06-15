@@ -11,7 +11,7 @@ using namespace std;
 
 inline wstring GetDeviceName(IMMDevice* pDevice)
 {
-    wstring result = L"(bilinmeyen cihaz)";
+    wstring result = L"(Unknown Device)";
     IPropertyStore* pProps = nullptr;
     if (SUCCEEDED(pDevice->OpenPropertyStore(STGM_READ, &pProps))) {
         PROPVARIANT v;

@@ -19,7 +19,7 @@ using namespace std;
 static const wchar_t* CurrentModeName(DSPEngine& dsp)
 {
     Effect* e = dsp.getEffect();
-    return e ? e->getName() : L"Efektsiz (passthrough)";
+    return e ? e->getName() : L"None Effect (passthrough)";
 }
 
 static float ComputePeak(const float* data, UINT32 numFrames, UINT32 channels)
@@ -46,7 +46,7 @@ static void PrintLevelBar(float peak)
 int main()
 {
     SetConsoleOutputCP(CP_UTF8);
-    wcout << L"Real-Time DSP Voice Transformer - Adim 4: DSP (Voice Change)\n";
+    wcout << L"Real-Time DSP Voice Transformer : DSP (Voice Change)\n";
     wcout << L"==============================================================\n";
 
     IMMDeviceEnumerator* pEnumerator = nullptr;
@@ -125,7 +125,7 @@ int main()
         wcout << L"  [0] Bypass   [1] Deep   [2] High   [3] Robot   [q] Quit\n\n";
 
         if (!cable.start()) { wcerr << L"[ERROR] CABLE start\n"; exitCode = 1; goto Cleanup; }
-        if (!mic.startCapture()) { wcerr << L"[ERROR] Mikrofon start\n"; exitCode = 1; goto Cleanup; }
+        if (!mic.startCapture()) { wcerr << L"[ERROR] Microphone start\n"; exitCode = 1; goto Cleanup; }
 
         wcout << L"Running! Please talk and try modes...\n\n";
 
@@ -167,7 +167,7 @@ int main()
                 cable.sendOutput(work.data(), framesToWrite);
             }
 
-            wcout << L"\rMod: " << CurrentModeName(dsp) << L"   ";
+            wcout << L"\rMode: " << CurrentModeName(dsp) << L"   ";
             PrintLevelBar(peak);
             wcout << L"  FIFO: " << framesInFifo << L" frame      ";
             wcout.flush();

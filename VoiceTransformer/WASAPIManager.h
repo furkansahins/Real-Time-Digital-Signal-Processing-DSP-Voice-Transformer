@@ -31,7 +31,7 @@ public:
         hr = m_client->Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
                 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-                10000000 /*1 sn tampon*/, 0, sharedFormat, nullptr);
+                10000000 , 0, sharedFormat, nullptr);
         if (FAILED(hr)) return false;
 
         hr = m_client->GetService(__uuidof(IAudioCaptureClient), (void**)&m_capture);

@@ -16,7 +16,7 @@ public:
 
     void setCarrierFreq(float hz) { m_carrierFreq = hz; }
 
-    const wchar_t* getName() const override { return L"Robotik (ring mod)"; }
+    const wchar_t* getName() const override { return L"Robotic (ring mod)"; }
 
     void applyEffect(float* data, UINT32 numFrames, UINT32 channels) override
     {
