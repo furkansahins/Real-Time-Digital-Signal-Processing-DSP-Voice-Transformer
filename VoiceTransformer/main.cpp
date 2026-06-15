@@ -1,28 +1,9 @@
-// ============================================================================
-//  Real-Time DSP Voice Transformer
-//  Adim 4: DSP (Sesi Degistirme) + UML sinif mimarisi
-//
-//  Akis (UML siniflari ile):
-//     Fiziksel Mikrofon
-//        -> WASAPIManager   (yakalar, CABLE formatina cevirir)
-//        -> AudioBuffer     (FIFO ara depo)
-//        -> DSPEngine       (aktif Effect'i uygular: PitchFilter / RingModulator)
-//        -> VirtualAudioDriver (CABLE Input'a yazar -> CABLE Output -> Meet/Discord)
-//
-//  Canli mod degistirme (klavye):
-//     [0] Efektsiz   [1] Kalin (-5)   [2] Ince (+5)   [3] Robotik   [q] Cikis
-//
-//  Kurulum hatirlatmasi: kaynak = FIZIKSEL mikrofon, hedef uygulamada (Meet)
-//  mikrofon = CABLE Output, "Bu cihazi dinle" KAPALI, KULAKLIK kullan.
-// ============================================================================
-
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <iostream>
 #include <vector>
-#include <conio.h>            // _kbhit, _getch (canli tus okuma)
-
+#include <conio.h>          
 #include "DeviceUtils.h"
 #include "AudioBuffer.h"
 #include "DSPEngine.h"
@@ -33,16 +14,14 @@
 
 using namespace std;
 
-#define POLL_INTERVAL_MS 10   // dusuk gecikme icin kucuk sabit polling araligi
+#define POLL_INTERVAL_MS 10
 
-// O an aktif modun adini dondurur (ekran icin).
 static const wchar_t* CurrentModeName(DSPEngine& dsp)
 {
     Effect* e = dsp.getEffect();
     return e ? e->getName() : L"Efektsiz (passthrough)";
 }
 
-// Bir ses blogundaki en yuksek genligi (0..1) hesaplar (level meter icin).
 static float ComputePeak(const float* data, UINT32 numFrames, UINT32 channels)
 {
     float peak = 0.0f;
@@ -67,7 +46,7 @@ static void PrintLevelBar(float peak)
 int main()
 {
     SetConsoleOutputCP(CP_UTF8);
-    wcout << L"Real-Time DSP Voice Transformer - Adim 4: DSP (Sesi Degistirme)\n";
+    wcout << L"Real-Time DSP Voice Transformer - Adim 4: DSP (Voice Change)\n";
     wcout << L"==============================================================\n";
 
     IMMDeviceEnumerator* pEnumerator = nullptr;
@@ -76,22 +55,20 @@ int main()
     int exitCode = 0;
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(hr)) { wcerr << L"[HATA] CoInitializeEx\n"; return 1; }
+    if (FAILED(hr)) { wcerr << L"[ERROR] CoInitializeEx\n"; return 1; }
 
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                           __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator);
-    if (FAILED(hr)) { wcerr << L"[HATA] MMDeviceEnumerator\n"; exitCode = 1; goto Cleanup; }
+    if (FAILED(hr)) { wcerr << L"[ERROR] MMDeviceEnumerator\n"; exitCode = 1; goto Cleanup; }
 
-    // 1) HEDEF: CABLE Input cihazini bul.
     pCableDevice = FindRenderDeviceByName(pEnumerator, L"CABLE Input");
     if (!pCableDevice) {
-        wcerr << L"[HATA] 'CABLE Input' bulunamadi. VB-Audio Virtual Cable kurulu mu?\n";
+        wcerr << L"[ERROR] 'CABLE Input' did not find. Is VB-Audio Virtual Cable installed?\n";
         exitCode = 1; goto Cleanup;
     }
 
-    // 2) KAYNAK: fiziksel mikrofonu kullaniciya sectir (CABLE secimi sonsuz yanki yapar).
     pMicDevice = SelectCaptureDevice(pEnumerator);
-    if (!pMicDevice) { wcerr << L"[HATA] Mikrofon secilemedi.\n"; exitCode = 1; goto Cleanup; }
+    if (!pMicDevice) { wcerr << L"[ERROR] Microphone is not selected.\n"; exitCode = 1; goto Cleanup; }
 
     float pitchlevel = 0.0f;
     bool inputcontroller = false;              
@@ -107,63 +84,55 @@ int main()
             pitchlevel = stof(satir, &idx);  
 
             if (idx != satir.size())
-                throw invalid_argument("fazladan karakter");
+                throw invalid_argument("Extra character");
 
             inputcontroller = true;            
         }
         catch (const exception& e) {
-            cout << "Gecersiz deger! Lutfen bir sayi girin.\n";
+            cout << "Invalid value! Please enter a number.\n";
         }
     }
 
     {
-        // ---- UML siniflarini olustur ve birbirine bagla ----
-        VirtualAudioDriver cable;     // cikis (CABLE Input)
-        WASAPIManager      mic;       // giris (fiziksel mikrofon)
-        AudioBuffer        fifo;      // ara depo (mikrofon -> DSP arasinda)
-        DSPEngine          dsp;       // efekt uygulayici beyin
+        VirtualAudioDriver cable;    
+        WASAPIManager      mic;     
+        AudioBuffer        fifo;    
+        DSPEngine          dsp;     
 
-        // Once CABLE'i hazirla; ortak format (mix format) ondan gelir.
-        if (!cable.init(pCableDevice)) { wcerr << L"[HATA] CABLE init\n"; exitCode = 1; goto Cleanup; }
+        if (!cable.init(pCableDevice)) { wcerr << L"[ERROR] CABLE init\n"; exitCode = 1; goto Cleanup; }
         WAVEFORMATEX* fmt = cable.getFormat();
 
-        // Mikrofonu, CABLE formatina cevirerek hazirla (AUTOCONVERT).
-        if (!mic.init(pMicDevice, fmt)) { wcerr << L"[HATA] Mikrofon init (AUTOCONVERT desteklenmiyor olabilir)\n"; exitCode = 1; goto Cleanup; }
+        if (!mic.init(pMicDevice, fmt)) { wcerr << L"[ERROR] Microphone initialization failed: AUTOCONVERT not supported.\n"; exitCode = 1; goto Cleanup; }
 
         fifo.configure(fmt->nChannels, fmt->nSamplesPerSec);
 
-        // ---- Efektleri olustur (sahiplik burada; DSPEngine yalnizca isaret eder) ----
-        PitchFilter   deepEffect(-pitchlevel, L"Kalin ");   // ses kalinlastir
-        PitchFilter   thinEffect(+pitchlevel, L"Ince ");    // ses incelt
-        RingModulator robotEffect(50.0f);                       // robotik
+        PitchFilter   deepEffect(-pitchlevel, L"Deep ");
+        PitchFilter   thinEffect(+pitchlevel, L"High ");
+        RingModulator robotEffect(50.0f);                       
 
-        // Efektlere ses bicimini tanit (ic tamponlarini hazirlarlar).
+  
         deepEffect.configure(fmt->nSamplesPerSec, fmt->nChannels);
         thinEffect.configure(fmt->nSamplesPerSec, fmt->nChannels);
         robotEffect.configure(fmt->nSamplesPerSec);
 
-        dsp.setEffect(nullptr);   // baslangic: efektsiz (passthrough)
+        dsp.setEffect(nullptr);
 
-        // Bilgi ekrani
-        wcout << L"\nKaynak (giris): " << GetDeviceName(pMicDevice) << L"\n";
-        wcout << L"Hedef (cikis) : " << cable.deviceName << L"\n";
-        wcout << L"Ortak format  : " << fmt->nSamplesPerSec << L" Hz, "
-              << fmt->nChannels << L" kanal, " << fmt->wBitsPerSample << L" bit\n\n";
-        wcout << L"--- MODLAR (calisirken tusa bas) ---\n";
-        wcout << L"  [0] Efektsiz   [1] Kalin    [2] Ince    [3] Robotik   [q] Cikis\n\n";
+        wcout << L"\nSource (input): " << GetDeviceName(pMicDevice) << L"\n";
+        wcout << L"Target (output) : " << cable.deviceName << L"\n";
+        wcout << L"Common format  : " << fmt->nSamplesPerSec << L" Hz, "
+              << fmt->nChannels << L" channels, " << fmt->wBitsPerSample << L" bit\n\n";
+        wcout << L"--- MODES (press a key while running) ---\n";
+        wcout << L"  [0] Bypass   [1] Deep   [2] High   [3] Robot   [q] Quit\n\n";
 
-        // ---- Akislari baslat ----
-        if (!cable.start()) { wcerr << L"[HATA] CABLE start\n"; exitCode = 1; goto Cleanup; }
-        if (!mic.startCapture()) { wcerr << L"[HATA] Mikrofon start\n"; exitCode = 1; goto Cleanup; }
+        if (!cable.start()) { wcerr << L"[ERROR] CABLE start\n"; exitCode = 1; goto Cleanup; }
+        if (!mic.startCapture()) { wcerr << L"[ERROR] Mikrofon start\n"; exitCode = 1; goto Cleanup; }
 
-        wcout << L"Calisiyor! Konusun ve mod tuslarini deneyin...\n\n";
+        wcout << L"Running! Please talk and try modes...\n\n";
 
-        vector<float> work;            // DSP'nin uzerinde calisacagi gecici blok
+        vector<float> work;
         bool running = true;
 
-        // ======================= ANA DONGU =======================
         while (running) {
-            // (1) Klavye: mod degistir / cik.
             while (_kbhit()) {
                 int key = _getch();
                 switch (key) {
@@ -178,13 +147,10 @@ int main()
 
             Sleep(POLL_INTERVAL_MS);
 
-            // (2) Mikrofondan gelen sesi FIFO'ya bosalt.
             mic.drainInto(fifo);
 
-            // (3) Gecikme guvenligi: FIFO 100ms'i asarsa eski veriyi dusur.
             fifo.clampToMaxFrames(fmt->nSamplesPerSec / 10);
 
-            // (4) CABLE'da bos yer kadar, FIFO'dan veri al -> DSP'den gecir -> yaz.
             UINT32 framesAvail   = cable.framesAvailable();
             UINT32 framesInFifo  = fifo.availableFrames();
             UINT32 framesToWrite = framesAvail < framesInFifo ? framesAvail : framesInFifo;
@@ -194,27 +160,22 @@ int main()
                 work.resize((size_t)framesToWrite * fmt->nChannels);
                 fifo.readFrames(work.data(), framesToWrite);
 
-                // ---- DSP: aktif efekti uygula (efektsizse dokunmaz) ----
                 dsp.process(work.data(), framesToWrite, fmt->nChannels);
 
                 peak = ComputePeak(work.data(), framesToWrite, fmt->nChannels);
 
-                // ---- Islenmis sesi CABLE Input'a gonder ----
                 cable.sendOutput(work.data(), framesToWrite);
             }
 
-            // (5) Durum satiri (ayni satiri gunceller).
             wcout << L"\rMod: " << CurrentModeName(dsp) << L"   ";
             PrintLevelBar(peak);
             wcout << L"  FIFO: " << framesInFifo << L" frame      ";
             wcout.flush();
         }
-        // ===================== ANA DONGU SONU =====================
 
         mic.stop();
         cable.stop();
-        wcout << L"\n\nDurduruldu.\n";
-        // cable/mic/fifo/dsp ve efektler burada (kapsam sonunda) otomatik yikilir.
+        wcout << L"\n\nStoped.\n";
     }
 
 Cleanup:
@@ -223,7 +184,7 @@ Cleanup:
     if (pEnumerator)  pEnumerator->Release();
     CoUninitialize();
 
-    wcout << L"\nCikmak icin Enter'a basin...";
+    wcout << L"\nPress enter to quit...";
     cin.get();
     return exitCode;
 }

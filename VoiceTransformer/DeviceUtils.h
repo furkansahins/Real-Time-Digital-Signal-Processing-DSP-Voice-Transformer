@@ -1,23 +1,14 @@
-// ============================================================================
-//  DeviceUtils.h
-//  WASAPI ses cihazlariyla ilgili kucuk yardimci (free) fonksiyonlar.
-//  Hicbir sinifa ait degildir; hem main hem de diger siniflar kullanabilsin
-//  diye burada toplanmistir.
-// ============================================================================
 #pragma once
 
 #include <windows.h>
-#include <mmdeviceapi.h>                     // IMMDevice, IMMDeviceEnumerator
-#include <functiondiscoverykeys_devpkey.h>   // PKEY_Device_FriendlyName
+#include <mmdeviceapi.h>                     
+#include <functiondiscoverykeys_devpkey.h>   
 #include <iostream>
 #include <string>
 
 using namespace std;
 
-// ----------------------------------------------------------------------------
-// Bir ses cihazinin dostane (insan-okur) ismini dondurur.
-// Ornek: "Microphone (Realtek(R) Audio)"
-// ----------------------------------------------------------------------------
+
 inline wstring GetDeviceName(IMMDevice* pDevice)
 {
     wstring result = L"(bilinmeyen cihaz)";
@@ -33,21 +24,13 @@ inline wstring GetDeviceName(IMMDevice* pDevice)
     return result;
 }
 
-// ----------------------------------------------------------------------------
-// Bir ismin VB-Cable sanal cihazina ait olup olmadigini soyler.
-// (Isimde "CABLE" veya "VB-Audio" geciyorsa sanal cihazdir.)
-// ----------------------------------------------------------------------------
+
 inline bool IsVBCableName(const wstring& name)
 {
     return name.find(L"CABLE") != wstring::npos ||
            name.find(L"VB-Audio") != wstring::npos;
 }
 
-// ----------------------------------------------------------------------------
-// CIKIS (render) cihazlari arasinda ismi 'substr' iceren ILK cihazi bulur.
-// Ornek kullanim: FindRenderDeviceByName(enum, L"CABLE Input")
-// Donen cihazin sahipligi cagirana aittir (Release etmek cagiranin gorevi).
-// ----------------------------------------------------------------------------
 inline IMMDevice* FindRenderDeviceByName(IMMDeviceEnumerator* pEnum, const wchar_t* substr)
 {
     IMMDeviceCollection* pCol = nullptr;
@@ -62,7 +45,7 @@ inline IMMDevice* FindRenderDeviceByName(IMMDeviceEnumerator* pEnum, const wchar
         IMMDevice* pDev = nullptr;
         if (FAILED(pCol->Item(i, &pDev))) continue;
         if (GetDeviceName(pDev).find(substr) != wstring::npos) {
-            found = pDev;   // bulundu; sahipligi cagirana birakiyoruz
+            found = pDev;
             break;
         }
         pDev->Release();
@@ -71,16 +54,7 @@ inline IMMDevice* FindRenderDeviceByName(IMMDeviceEnumerator* pEnum, const wchar
     return found;
 }
 
-// ----------------------------------------------------------------------------
-// KAYNAK mikrofonu kullaniciya sectirir.
-//
-// NEDEN: Windows'un varsayilan mikrofonu "CABLE Output" yapilmis olabilir.
-// Eger varsayilani kullanirsak program CABLE'dan okuyup CABLE'a yazar ve
-// dogrudan SONSUZ DIJITAL GERI BESLEME (yanki) olusur. Bu yuzden fiziksel
-// mikrofonu kullaniciya acikca sectiriyor, CABLE cihazlarini uyariyoruz.
-//
-// Donen cihazin sahipligi cagirana aittir.
-// ----------------------------------------------------------------------------
+
 inline IMMDevice* SelectCaptureDevice(IMMDeviceEnumerator* pEnum)
 {
     IMMDeviceCollection* pCol = nullptr;
@@ -91,7 +65,7 @@ inline IMMDevice* SelectCaptureDevice(IMMDeviceEnumerator* pEnum)
     pCol->GetCount(&count);
     if (count == 0) { pCol->Release(); return nullptr; }
 
-    wcout << L"\nKullanilabilir mikrofonlar (KAYNAK olarak secin):\n";
+    wcout << L"\nAvailable microphones (select one as SOURCE):\n";
     int firstNonCable = -1;
     for (UINT i = 0; i < count; ++i) {
         IMMDevice* d = nullptr;
@@ -99,15 +73,15 @@ inline IMMDevice* SelectCaptureDevice(IMMDeviceEnumerator* pEnum)
         wstring name = GetDeviceName(d);
         wcout << L"  [" << i << L"] " << name;
         if (IsVBCableName(name))
-            wcout << L"   <-- VB-CABLE (KAYNAK SECMEYIN! sonsuz yanki olur)";
+            wcout << L"   <-- VB-CABLE DO NOT select as SOURCE! causes infinite echo";
         else if (firstNonCable < 0)
-            firstNonCable = (int)i;   // ilk fiziksel mikrofonu varsayilan oneri yap
+            firstNonCable = (int)i;
         wcout << L"\n";
         d->Release();
     }
     if (firstNonCable < 0) firstNonCable = 0;
 
-    wcout << L"Kaynak mikrofon index girin (Enter = " << firstNonCable << L"): ";
+    wcout << L"Enter source microphone index (Enter = " << firstNonCable << L"): ";
     int sel = firstNonCable;
     wstring line;
     getline(wcin, line);
