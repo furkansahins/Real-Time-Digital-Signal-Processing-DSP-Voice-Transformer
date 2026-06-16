@@ -13,5 +13,5 @@ public:
 
     virtual const wchar_t* getName() const = 0;
 
-    virtual void applyEffect(float* data, UINT32 numFrames, UINT32 channels) = 0;
+    virtual void applyEffect(float* data, UINT32 numFrames, UINT32 channels) = 0;   
 };

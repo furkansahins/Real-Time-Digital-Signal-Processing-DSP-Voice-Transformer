@@ -74,7 +74,7 @@ int main()
     bool inputcontroller = false;              
 
     while (!inputcontroller) {                 
-        cout << "Adjust pitch level: ";
+        cout << "Adjust pitch level (0-12 semitones): ";
 
         string satir;
         getline(cin, satir);                
@@ -86,10 +86,13 @@ int main()
             if (idx != satir.size())
                 throw invalid_argument("Extra character");
 
+            if (pitchlevel < 0.0f || pitchlevel > 12.0f)
+                throw out_of_range("Out of range");
+
             inputcontroller = true;            
         }
         catch (const exception& e) {
-            cout << "Invalid value! Please enter a number.\n";
+            cout << "Invalid value! Please enter a number between 0 and 12.\n";
         }
     }
 
